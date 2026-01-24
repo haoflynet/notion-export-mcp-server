@@ -20,6 +20,31 @@ if (!fileToken) {
   throw new Error('NOTION_FILE_TOKEN environment variable is required');
 }
 
+const SAFE_ERROR_PATTERNS = [
+  /^Params are required$/,
+  /^Unknown tool:/,
+  /^Notion page id/,
+  /^Invalid download URL/,
+  /^Download URL must use HTTPS/,
+  /^Download URL host not allowed/,
+  /^Zip entry path traversal/,
+  /^Export task failed:/,
+  /^Could not find file in ZIP/,
+];
+
+const sanitizeErrorMessage = (error: unknown): string => {
+  if (!(error instanceof Error)) {
+    return 'An unexpected error occurred';
+  }
+  const message = error.message;
+  for (const pattern of SAFE_ERROR_PATTERNS) {
+    if (pattern.test(message)) {
+      return message;
+    }
+  }
+  return 'An error occurred while processing the request';
+};
+
 const server = new Server(
   {
     name: 'notion-export-mcp-server',
@@ -72,9 +97,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
   } catch (error) {
     console.error('Error handling request:', error);
-    const errorMessage =
-      error instanceof Error ? error.message : 'Unknown error occurred';
-    throw new Error(errorMessage);
+    throw new Error(sanitizeErrorMessage(error));
   }
 });
 

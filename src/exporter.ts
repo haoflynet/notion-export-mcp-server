@@ -5,6 +5,8 @@
 
 import axios, { AxiosInstance } from 'axios';
 import AdmZip from 'adm-zip';
+import * as path from 'path';
+import * as fs from 'fs';
 
 interface Task {
   id: string;
@@ -38,6 +40,44 @@ const toUuid = (id: string): string => {
   return `${uuid.slice(0, 8)}-${uuid.slice(8, 12)}-${uuid.slice(12, 16)}-${uuid.slice(16, 20)}-${uuid.slice(20)}`;
 };
 
+const ALLOWED_DOWNLOAD_HOSTS = ['.notion.so', '.amazonaws.com'];
+
+const validateDownloadUrl = (url: string): void => {
+  let parsedUrl: URL;
+  try {
+    parsedUrl = new URL(url);
+  } catch {
+    throw new Error('Invalid download URL format');
+  }
+  if (parsedUrl.protocol !== 'https:') {
+    throw new Error('Download URL must use HTTPS protocol');
+  }
+  const hostname = parsedUrl.hostname.toLowerCase();
+  const isAllowed = ALLOWED_DOWNLOAD_HOSTS.some(
+    (allowed) => hostname === allowed.slice(1) || hostname.endsWith(allowed)
+  );
+  if (!isAllowed) {
+    throw new Error(`Download URL host not allowed: ${hostname}`);
+  }
+};
+
+const safeExtractZip = (zip: AdmZip, targetDir: string): void => {
+  const resolvedTarget = path.resolve(targetDir);
+  for (const entry of zip.getEntries()) {
+    if (entry.isDirectory) continue;
+    const entryPath = path.join(resolvedTarget, entry.entryName);
+    const resolvedPath = path.resolve(entryPath);
+    if (!resolvedPath.startsWith(resolvedTarget + path.sep)) {
+      throw new Error(`Zip entry path traversal detected: ${entry.entryName}`);
+    }
+    const entryDir = path.dirname(resolvedPath);
+    if (!fs.existsSync(entryDir)) {
+      fs.mkdirSync(entryDir, { recursive: true });
+    }
+    fs.writeFileSync(resolvedPath, entry.getData());
+  }
+};
+
 export class NotionExporter {
   protected readonly client: AxiosInstance;
   private readonly config: Config;
@@ -51,8 +91,10 @@ export class NotionExporter {
    * @param fileToken – the Notion `file_token` Cookie value
    */
   constructor(tokenV2: string, fileToken: string, config?: Config) {
+    const timeout = parseInt(process.env.NOTION_REQUEST_TIMEOUT || '60000', 10);
     this.client = axios.create({
       baseURL: 'https://www.notion.so/api/v3/',
+      timeout,
       headers: {
         Cookie: `token_v2=${tokenV2};file_token=${fileToken}`,
       },
@@ -125,6 +167,7 @@ export class NotionExporter {
    * @returns The ZIP as an 'AdmZip' object
    */
   private downloadZip = async (url: string): Promise<AdmZip> => {
+    validateDownloadUrl(url);
     const res = await this.client.get(url, { responseType: 'arraybuffer' });
     return new AdmZip(res.data);
   };
@@ -138,9 +181,9 @@ export class NotionExporter {
    * @param id BlockId of the page/block/DB to export
    * @param path Folder path where the files are unzipped
    */
-  getMdFiles = async (id: string, path: string): Promise<void> => {
+  getMdFiles = async (id: string, targetPath: string): Promise<void> => {
     const zip = await this.getZip(id);
-    zip.extractAllTo(path);
+    safeExtractZip(zip, targetPath);
   };
 
   /**
